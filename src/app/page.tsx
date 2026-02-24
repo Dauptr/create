@@ -116,6 +116,14 @@ export default function Home() {
         {/* Footer */}
         <div className="mt-auto pt-4 border-t border-[rgba(255,255,255,0.08)]">
           <div className="text-xs text-[#94a3b8]">NEXUS OS v3.2</div>
+          <a 
+            href="https://github.com/Dauptr" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            Created by Dauptr
+          </a>
         </div>
       </aside>
 

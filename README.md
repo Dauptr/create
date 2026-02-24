@@ -1,5 +1,7 @@
 # NEXUS OS Creative Studio
 
+**Created by [Dauptr](https://github.com/Dauptr)**
+
 AI-powered creative studio for image generation, chat, YouTube search, and TikTok shorts player.
 
 ## Features

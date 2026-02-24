@@ -17,9 +17,9 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "NEXUS OS - Creative Studio",
-  description: "AI-powered creative studio for image generation, chat, and database management. Built with Next.js and Z.ai.",
+  description: "AI-powered creative studio for image generation, chat, and database management. Created by Dauptr.",
   keywords: ["NEXUS", "AI", "Image Generation", "Creative Studio", "Next.js"],
-  authors: [{ name: "NEXUS Team" }],
+  authors: [{ name: "Dauptr", url: "https://github.com/Dauptr" }],
   icons: {
     icon: "/logo.svg",
   },
