@@ -82,7 +82,7 @@
       </nav>
       
       <!-- Footer -->
-      <div class="mt-auto pt-4 border-t border-white/10">
+      <div class="mt-auto pt-4 border-t border-white/10 text-center">
         <div class="text-xs text-white/50">NEXUS OS v1.0</div>
         <a href="https://github.com/Dauptr" target="_blank" rel="noopener noreferrer" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">Created by Dauptr</a>
       </div>
@@ -455,11 +455,25 @@
     };
     
     function renderTikTokVideos() {
-      document.getElementById('tt-slide-container').innerHTML = tiktokVideos.map((v, i) => `
-        <div class="w-full h-full absolute" style="top: ${i * 100}%">
-          <iframe src="${v.embedUrl}?autoplay=1" class="w-full h-full" style="border:none" allow="autoplay; fullscreen; encrypted-media"></iframe>
-        </div>
-      `).join('');
+      document.getElementById('tt-slide-container').innerHTML = tiktokVideos.map((v, i) => {
+        // Only current video has autoplay, others are muted/paused
+        const isCurrent = i === currentVideoIndex;
+        const isAdjacent = Math.abs(i - currentVideoIndex) === 1;
+        
+        if (!isCurrent && !isAdjacent) return '';
+        
+        return `
+          <div class="w-full h-full absolute" style="top: ${i * 100}%">
+            <iframe 
+              key="${isCurrent ? 'current-' + currentVideoIndex : 'preload-' + i}"
+              src="${v.embedUrl}?autoplay=${isCurrent ? 1 : 0}&muted=${isCurrent ? 0 : 1}" 
+              class="w-full h-full" 
+              style="border:none" 
+              allow="autoplay; fullscreen; encrypted-media"
+            ></iframe>
+          </div>
+        `;
+      }).join('');
       document.getElementById('tt-slide-container').style.transform = `translateY(-${currentVideoIndex * 100}%)`;
     }
     

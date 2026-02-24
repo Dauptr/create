@@ -114,7 +114,7 @@ export default function Home() {
         </nav>
 
         {/* Footer */}
-        <div className="mt-auto pt-4 border-t border-[rgba(255,255,255,0.08)]">
+        <div className="mt-auto pt-4 border-t border-[rgba(255,255,255,0.08)] text-center">
           <div className="text-xs text-[#94a3b8]">NEXUS OS v3.2</div>
           <a 
             href="https://github.com/Dauptr" 
@@ -1195,9 +1195,20 @@ function TikTokPage() {
                   right: 0
                 }}
               >
-                {Math.abs(index - currentShortIndex) <= 1 && (
+                {/* Only render current video with autoplay, others without */}
+                {index === currentShortIndex && (
                   <iframe
+                    key={`video-${currentShortIndex}`}
                     src={`${video.embedUrl}?autoplay=1&muted=0`}
+                    className="w-full h-full"
+                    allow="autoplay; fullscreen; encrypted-media"
+                    style={{ border: 'none' }}
+                  />
+                )}
+                {/* Preload next/prev without autoplay */}
+                {Math.abs(index - currentShortIndex) === 1 && (
+                  <iframe
+                    src={`${video.embedUrl}?autoplay=0&muted=1`}
                     className="w-full h-full"
                     allow="autoplay; fullscreen; encrypted-media"
                     style={{ border: 'none' }}
