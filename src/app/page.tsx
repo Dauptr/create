@@ -775,6 +775,18 @@ interface TikTokVideo {
   embedUrl: string
 }
 
+// Watch behavior tracking for AI recommendations
+interface WatchBehavior {
+  videoId: string
+  query: string
+  author: string
+  watchTime: number // seconds watched
+  totalDuration: number
+  liked: boolean
+  swiped: 'up' | 'down' | 'none'
+  watched: boolean // watched to end
+}
+
 // TikTok Page
 function TikTokPage() {
   const [query, setQuery] = useState('')
@@ -788,12 +800,70 @@ function TikTokPage() {
   const [currentShortIndex, setCurrentShortIndex] = useState(0)
   const [likedVideos, setLikedVideos] = useState<Set<string>>(new Set())
   const [logs, setLogs] = useState<{ time: string; msg: string; type: 'info' | 'success' | 'error' }[]>([])
-  const [playingVideo, setPlayingVideo] = useState<TikTokVideo | null>(null)
   const [swipeStartY, setSwipeStartY] = useState(0)
-  const [isSwiping, setIsSwiping] = useState(false)
-  const [swipeDirection, setSwipeDirection] = useState<'up' | 'down' | null>(null)
-  const [isRandomMode, setIsRandomMode] = useState(false)
   const [watchedVideos, setWatchedVideos] = useState<Set<string>>(new Set())
+  const autoPlayRef = useRef<NodeJS.Timeout | null>(null)
+  const [searchSuggestions, setSearchSuggestions] = useState<string[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [watchHistory, setWatchHistory] = useState<string[]>([])
+  const [lastWheelTime, setLastWheelTime] = useState(0)
+  const [searchType, setSearchType] = useState<'videos' | 'live' | 'trending' | 'hashtag' | 'user'>('videos')
+
+  // AI Recommendation states
+  const [watchBehavior, setWatchBehavior] = useState<WatchBehavior[]>([])
+  const [aiRecommendations, setAiRecommendations] = useState<string[]>([])
+  const [videoStartTime, setVideoStartTime] = useState<number>(Date.now())
+  const [aiLoading, setAiLoading] = useState(false)
+
+  // Popular TikTok search suggestions
+  const popularSuggestions = [
+    'funny cats', 'dance challenge', 'cooking recipes', 'life hacks',
+    'fitness workout', 'cute dogs', 'makeup tutorial', 'gaming clips',
+    'travel vlog', 'comedy skit', 'music cover', 'art tutorial',
+    'fashion outfit', 'food review', 'prank videos', 'motivation',
+    'DIY crafts', 'pet tricks', 'street food', 'viral trends',
+    'satisfying videos', 'asmr', 'basketball', 'football highlights',
+    'beauty tips', 'skincare routine', 'workout motivation', 'funny fails',
+    'magic tricks', 'science experiments', 'coding', 'tech review',
+    'car modification', 'motorcycle', 'surfing', 'snowboarding'
+  ]
+
+  // Get suggestions based on input
+  const getSuggestions = (input: string) => {
+    if (!input.trim()) {
+      // Show popular suggestions + watch history
+      const combined = [...new Set([...watchHistory.slice(-5), ...popularSuggestions.slice(0, 10)])]
+      return combined.slice(0, 8)
+    }
+    
+    // Filter suggestions matching input
+    const filtered = popularSuggestions.filter(s => 
+      s.toLowerCase().includes(input.toLowerCase())
+    )
+    
+    // Add watch history matches
+    const historyMatches = watchHistory.filter(h =>
+      h.toLowerCase().includes(input.toLowerCase())
+    )
+    
+    return [...new Set([...historyMatches, ...filtered])].slice(0, 8)
+  }
+
+  // Handle input change
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setQuery(value)
+    setSearchSuggestions(getSuggestions(value))
+    setShowSuggestions(true)
+  }
+
+  // Handle suggestion click
+  const handleSuggestionClick = (suggestion: string) => {
+    setQuery(suggestion)
+    setShowSuggestions(false)
+    // Auto search
+    searchVideos()
+  }
 
   const log = (msg: string, type: 'info' | 'success' | 'error' = 'info') => {
     setLogs(prev => [...prev.slice(-20), { time: new Date().toLocaleTimeString(), msg, type }])
@@ -804,31 +874,36 @@ function TikTokPage() {
 
     setLoading(true)
     setShortsMode(false)
-    log(`Searching for newest: "${query}"...`, 'info')
+    setShowSuggestions(false)
+
+    // Save to watch history
+    setWatchHistory(prev => {
+      const newHistory = [...prev.filter(h => h !== query), query]
+      return newHistory.slice(-20) // Keep last 20 searches
+    })
 
     try {
       const res = await fetch('/api/tiktok-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, searchType }),
       })
 
       const data = await res.json()
 
       if (res.ok && data.success) {
-        const fetchedVideos = data.allVideos || data.videos || []
+        const fetchedVideos = data.videos || []
         setAllVideos(fetchedVideos)
-        setDisplayedVideos(fetchedVideos.slice(0, 5)) // Show first 5
+        setDisplayedVideos(fetchedVideos.slice(0, 20)) // Show first 20
         setCurrentPage(1)
         setTotalResults(fetchedVideos.length)
         setSearchPerformed(true)
         setCurrentShortIndex(0)
-        log(`Found ${fetchedVideos.length} newest videos`, 'success')
       } else {
-        log(`Error: ${data.error}`, 'error')
+        console.error('Search error:', data.error)
       }
     } catch (error) {
-      log('Search failed', 'error')
+      console.error('Search failed:', error)
     } finally {
       setLoading(false)
     }
@@ -839,46 +914,34 @@ function TikTokPage() {
     searchVideos()
   }
 
-  // Load next 5 videos
+  // Load next 20 videos
   const loadNext5 = () => {
     const nextPageNum = currentPage + 1
-    const startIndex = currentPage * 5
-    const endIndex = startIndex + 5
+    const startIndex = currentPage * 20
+    const endIndex = startIndex + 20
     const nextVideos = allVideos.slice(startIndex, endIndex)
-    
+
     if (nextVideos.length > 0) {
       setDisplayedVideos(nextVideos)
       setCurrentPage(nextPageNum)
-      log(`Loaded videos ${startIndex + 1}-${Math.min(endIndex, allVideos.length)} of ${allVideos.length}`, 'success')
     }
   }
 
-  // Load previous 5 videos
+  // Load previous 20 videos
   const loadPrev5 = () => {
     if (currentPage > 1) {
       const prevPageNum = currentPage - 1
-      const startIndex = (prevPageNum - 1) * 5
-      const endIndex = startIndex + 5
+      const startIndex = (prevPageNum - 1) * 20
+      const endIndex = startIndex + 20
       const prevVideos = allVideos.slice(startIndex, endIndex)
-      
+
       setDisplayedVideos(prevVideos)
       setCurrentPage(prevPageNum)
-      log(`Loaded videos ${startIndex + 1}-${endIndex} of ${allVideos.length}`, 'info')
     }
   }
 
-  const hasMore = currentPage * 5 < allVideos.length
+  const hasMore = currentPage * 20 < allVideos.length
   const hasPrev = currentPage > 1
-
-  const playVideo = (video: TikTokVideo) => {
-    setPlayingVideo(video)
-    log(`Playing video: ${video.id}`, 'success')
-  }
-
-  const closeVideo = () => {
-    setPlayingVideo(null)
-    log('Video player closed', 'info')
-  }
 
   const toggleLike = (videoId: string) => {
     setLikedVideos(prev => {
@@ -894,549 +957,322 @@ function TikTokPage() {
     })
   }
 
-  const nextShort = () => {
-    if (isRandomMode) {
-      // Random mode: pick a random video
-      const randomIndex = Math.floor(Math.random() * allVideos.length)
-      setCurrentShortIndex(randomIndex)
-      setSwipeDirection('up')
-      setTimeout(() => setSwipeDirection(null), 300)
-      log(`Random video: ${randomIndex + 1}/${allVideos.length}`, 'info')
-    } else if (currentShortIndex < allVideos.length - 1) {
-      setCurrentShortIndex(prev => prev + 1)
-      setSwipeDirection('up')
-      setTimeout(() => setSwipeDirection(null), 300)
-      log(`Navigating to video ${currentShortIndex + 2}/${allVideos.length}`, 'info')
+  // Record watch behavior for AI recommendations
+  const recordWatchBehavior = (swipedDirection: 'up' | 'down' | 'none' = 'none') => {
+    if (!allVideos[currentShortIndex]) return
+
+    const watchTime = (Date.now() - videoStartTime) / 1000
+    const video = allVideos[currentShortIndex]
+    const videoDuration = 15 // Default TikTok duration
+
+    const behavior: WatchBehavior = {
+      videoId: video.id,
+      query: query,
+      author: video.author,
+      watchTime: Math.min(watchTime, videoDuration),
+      totalDuration: videoDuration,
+      liked: likedVideos.has(video.id),
+      swiped: swipedDirection,
+      watched: watchTime >= videoDuration * 0.8
     }
-    // Mark as watched
+
+    setWatchBehavior(prev => [...prev.slice(-50), behavior])
+  }
+
+  // Get AI recommendations based on watch behavior
+  const getAIRecommendations = async () => {
+    if (watchBehavior.length < 3) return
+
+    setAiLoading(true)
+
+    try {
+      const res = await fetch('/api/tiktok-ai-recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          watchBehavior: watchBehavior.slice(-20),
+          currentQuery: query
+        })
+      })
+
+      const data = await res.json()
+      if (data.success && data.recommendations) {
+        setAiRecommendations(data.recommendations)
+      }
+    } catch (error) {
+      console.error('AI recommendation failed')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const nextShort = () => {
+    recordWatchBehavior('up')
+
+    if (currentShortIndex < allVideos.length - 1) {
+      setCurrentShortIndex(currentShortIndex + 1)
+      setVideoStartTime(Date.now())
+    }
+
     if (allVideos[currentShortIndex]) {
       setWatchedVideos(prev => new Set([...prev, allVideos[currentShortIndex].id]))
+    }
+
+    // Get AI recommendations every 5 videos
+    if (watchBehavior.length > 0 && watchBehavior.length % 5 === 0) {
+      getAIRecommendations()
     }
   }
 
   const prevShort = () => {
-    if (!isRandomMode && currentShortIndex > 0) {
-      setCurrentShortIndex(prev => prev - 1)
-      setSwipeDirection('down')
-      setTimeout(() => setSwipeDirection(null), 300)
-      log(`Navigating to video ${currentShortIndex}/${allVideos.length}`, 'info')
+    recordWatchBehavior('down')
+
+    if (currentShortIndex > 0) {
+      setCurrentShortIndex(currentShortIndex - 1)
+      setVideoStartTime(Date.now())
     }
   }
 
   // Touch handlers for swipe
   const handleTouchStart = (e: React.TouchEvent) => {
     setSwipeStartY(e.touches[0].clientY)
-    setIsSwiping(true)
   }
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isSwiping) return
-    const currentY = e.touches[0].clientY
-    const diff = swipeStartY - currentY
-    
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!swipeStartY) return
+
+    const endY = e.changedTouches[0].clientY
+    const diff = swipeStartY - endY
+
+    // Swipe up = next, Swipe down = prev (threshold 50px)
     if (diff > 50) {
-      setSwipeDirection('up')
-    } else if (diff < -50) {
-      setSwipeDirection('down')
-    }
-  }
-
-  const handleTouchEnd = () => {
-    if (swipeDirection === 'up') {
       nextShort()
-    } else if (swipeDirection === 'down' && !isRandomMode) {
+    } else if (diff < -50) {
       prevShort()
     }
-    setIsSwiping(false)
-    setSwipeDirection(null)
+
+    setSwipeStartY(0)
   }
 
   // Mouse wheel handler for desktop
   const handleWheel = (e: React.WheelEvent) => {
-    if (e.deltaY > 30) {
+    const now = Date.now()
+    if (now - lastWheelTime < 400) return
+
+    if (e.deltaY > 50) {
+      setLastWheelTime(now)
       nextShort()
-    } else if (e.deltaY < -30 && !isRandomMode) {
+    } else if (e.deltaY < -50) {
+      setLastWheelTime(now)
       prevShort()
     }
   }
 
-  const openOnTikTok = (url: string) => {
-    window.open(url, '_blank')
-    log(`Opening on TikTok: ${url}`, 'info')
-  }
-
-  const playCurrentShort = () => {
-    if (allVideos[currentShortIndex]) {
-      setPlayingVideo(allVideos[currentShortIndex])
-      log(`Playing video in player`, 'success')
+  // Auto-play effect - auto-advance after video duration
+  useEffect(() => {
+    if (autoPlayRef.current) {
+      clearTimeout(autoPlayRef.current)
+      autoPlayRef.current = null
     }
-  }
 
-  const startPage = (currentPage - 1) * 5 + 1
-  const endPage = Math.min(currentPage * 5, allVideos.length)
+    if (!shortsMode || allVideos.length === 0) return
+
+    setVideoStartTime(Date.now())
+
+    // Auto-advance after 15 seconds
+    autoPlayRef.current = setTimeout(() => {
+      setCurrentShortIndex(prev => {
+        if (prev < allVideos.length - 1) return prev + 1
+        return prev
+      })
+    }, 15000)
+
+    return () => {
+      if (autoPlayRef.current) {
+        clearTimeout(autoPlayRef.current)
+      }
+    }
+  }, [currentShortIndex, shortsMode, allVideos.length])
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!shortsMode) return
+
+      if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        prevShort()
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        nextShort()
+      } else if (e.key === 'Escape') {
+        setShortsMode(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [shortsMode, currentShortIndex])
 
   return (
     <div className="w-full max-w-[1200px]">
       {/* Search Card */}
-      <div className="bg-[rgba(20,20,25,0.6)] border border-[rgba(255,255,255,0.08)] rounded-3xl p-8 backdrop-blur-sm shadow-[0_20px_40px_rgba(0,0,0,0.2)] mb-6">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold flex items-center gap-3">
+      <div className="bg-[rgba(20,20,25,0.6)] border border-[rgba(255,255,255,0.08)] rounded-2xl p-4 md:p-8 backdrop-blur-sm shadow-lg mb-4">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
             <TikTokIcon />
-            TikTok Search
+            TikTok
           </h2>
           {searchPerformed && allVideos.length > 0 && (
             <button
-              onClick={() => setShortsMode(!shortsMode)}
-              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-                shortsMode 
-                  ? 'bg-gradient-to-r from-pink-500 to-red-500 text-white' 
-                  : 'bg-[rgba(255,255,255,0.05)] text-[#94a3b8] hover:bg-[rgba(255,255,255,0.1)]'
-              }`}
+              onClick={() => setShortsMode(true)}
+              className="px-4 py-2 rounded-full font-medium text-sm bg-gradient-to-r from-pink-500 to-red-500 text-white"
             >
-              {shortsMode ? '📱 Shorts Mode' : '📋 List Mode'}
+              ▶ Watch
             </button>
           )}
         </div>
 
-        <form onSubmit={handleSearch} className="flex gap-3">
+        <form onSubmit={handleSearch} className="flex gap-2">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search for newest TikTok videos..."
-            className="flex-1 p-4 bg-[rgba(0,0,0,0.4)] border border-[rgba(255,255,255,0.08)] rounded-xl text-[#f8fafc] outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 transition-all"
+            placeholder="Search TikTok..."
+            className="flex-1 p-3 bg-black/40 border border-white/10 rounded-xl text-white outline-none focus:border-pink-400 transition-all"
           />
           <button
             type="submit"
             disabled={loading || !query.trim()}
-            className="px-8 py-4 rounded-xl bg-black text-white font-semibold hover:bg-gray-900 transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-gray-700"
+            className="px-6 py-3 rounded-xl bg-gradient-to-r from-pink-500 to-red-500 text-white font-medium disabled:opacity-50"
           >
-            {loading ? 'Searching...' : 'Search Newest'}
+            {loading ? '...' : 'Search'}
           </button>
         </form>
+
+        {/* Quick Tags */}
+        <div className="flex flex-wrap gap-2 mt-3">
+          {['trending', 'funny', 'dance', 'cats', 'music', 'gaming'].map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => {
+                setQuery(tag)
+                searchVideos()
+              }}
+              className="px-3 py-1 rounded-full bg-white/10 text-white/80 text-sm hover:bg-pink-500/30 transition-all"
+            >
+              #{tag}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Video Player Modal */}
-      {playingVideo && (
-        <div className="fixed inset-0 bg-black z-50 flex items-center justify-center">
-          {/* Close Button */}
-          <button
-            onClick={closeVideo}
-            className="absolute top-4 right-4 z-20 p-3 rounded-full bg-black/50 hover:bg-black/70 transition-colors text-white"
-          >
-            <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M6 18L18 6M6 6l12 12"/>
-            </svg>
-          </button>
-          
-          {/* Video Title Overlay */}
-          <div className="absolute top-4 left-4 z-20 text-white pointer-events-none">
-            <div className="flex items-center gap-2 mb-1">
-              <TikTokIcon />
-              <span className="font-medium">Now Playing</span>
-            </div>
-            <p className="text-sm text-white/70 line-clamp-1 max-w-[300px]">{playingVideo.title}</p>
-          </div>
-          
-          {/* TikTok Embed Player - Full Screen */}
-          <div className="w-full h-full flex items-center justify-center bg-black">
-            <div className="relative w-full max-w-[400px] h-full">
-              {/* TikTok Embed iframe */}
-              <iframe
-                src={playingVideo.embedUrl}
-                className="w-full h-full"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-                allowFullScreen
-                sandbox="allow-scripts allow-same-origin"
-                style={{ border: 'none' }}
-              />
-              {/* Click blocker overlay - prevents redirects to TikTok */}
-              <div 
-                className="absolute inset-0 z-10"
-                style={{ pointerEvents: 'all', background: 'transparent' }}
-              />
-            </div>
-          </div>
-          
-          {/* Bottom Actions */}
-          <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/90 to-transparent z-20">
-            <div className="flex items-center justify-between max-w-[400px] mx-auto">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-pink-500 to-red-500 flex items-center justify-center font-bold text-white">
-                  @{playingVideo.author?.[0]?.toUpperCase() || '?'}
-                </div>
-                <div>
-                  <div className="text-white font-medium text-sm">@{playingVideo.author}</div>
-                  <div className="text-white/50 text-xs">{playingVideo.publishedAt}</div>
-                </div>
-              </div>
-              <button
-                onClick={() => toggleLike(playingVideo.id)}
-                className={`p-3 rounded-full transition-all ${
-                  likedVideos.has(playingVideo.id) 
-                    ? 'bg-red-500/20 text-red-400' 
-                    : 'bg-white/10 text-white hover:bg-white/20'
-                }`}
-              >
-                <svg width="24" height="24" fill={likedVideos.has(playingVideo.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Shorts Mode Player */}
+      {/* Shorts Mode - Fullscreen Auto Player with Smooth Slide */}
       {shortsMode && allVideos.length > 0 && (
-        <div className="flex gap-6">
-          {/* Main Shorts Player */}
-          <div className="flex-1 flex justify-center">
-            <div 
-              className="relative w-[340px] h-[600px] bg-black rounded-2xl overflow-hidden border border-[rgba(255,255,255,0.1)] shadow-2xl select-none"
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-              onWheel={handleWheel}
-            >
-              {/* Swipe Transition Animation */}
-              <div className={`absolute inset-0 z-30 pointer-events-none transition-all duration-300 ${
-                swipeDirection === 'up' ? 'animate-pulse bg-gradient-to-t from-white/20 to-transparent' :
-                swipeDirection === 'down' ? 'animate-pulse bg-gradient-to-b from-white/20 to-transparent' : ''
-              }`} />
-
-              {/* Video Background Gradient */}
-              <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/20 to-black/80" />
-              
-              {/* Dynamic Gradient Background */}
-              <div 
-                className="absolute inset-0 opacity-30 transition-all duration-500"
+        <div className="fixed inset-0 z-50 bg-black overflow-hidden">
+          {/* Videos Container with Slide Animation */}
+          <div
+            className="w-full h-full transition-transform duration-300 ease-out"
+            style={{
+              transform: `translateY(-${currentShortIndex * 100}%)`
+            }}
+          >
+            {allVideos.map((video, index) => (
+              <div
+                key={video.id}
+                className="w-full h-full"
                 style={{
-                  background: `linear-gradient(135deg, 
-                    hsl(${(currentShortIndex * 40) % 360}, 70%, 50%), 
-                    hsl(${(currentShortIndex * 40 + 60) % 360}, 70%, 40%), 
-                    hsl(${(currentShortIndex * 40 + 120) % 360}, 70%, 30%))`
+                  position: 'absolute',
+                  top: `${index * 100}%`,
+                  left: 0,
+                  right: 0
                 }}
-              />
-
-              {/* Active Video Indicator - Top */}
-              <div className="absolute top-0 left-0 right-0 h-1 bg-white/20">
-                <div 
-                  className="h-full bg-gradient-to-r from-pink-500 to-red-500 transition-all duration-300"
-                  style={{ width: `${((currentShortIndex + 1) / allVideos.length) * 100}%` }}
-                />
-              </div>
-
-              {/* TikTok Logo Watermark */}
-              <div className="absolute top-4 left-4 opacity-50">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-                  <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
-                </svg>
-              </div>
-
-              {/* Random Mode Badge */}
-              {isRandomMode && (
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-medium animate-pulse">
-                  🎲 Random Mode
-                </div>
-              )}
-
-              {/* Watched Badge */}
-              {watchedVideos.has(allVideos[currentShortIndex]?.id) && (
-                <div className="absolute top-12 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-white/20 text-white text-[10px]">
-                  ✓ Watched
-                </div>
-              )}
-
-              {/* Navigation Arrows */}
-              {!isRandomMode && (
-                <button 
-                  onClick={prevShort}
-                  disabled={currentShortIndex === 0}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 flex items-center justify-center hover:bg-black/70 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  <svg width="20" height="20" fill="white" viewBox="0 0 24 24">
-                    <path d="M15 19l-7-7 7-7"/>
-                  </svg>
-                </button>
-              )}
-              <button 
-                onClick={nextShort}
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 flex items-center justify-center hover:bg-black/70 transition-all"
               >
-                <svg width="20" height="20" fill="white" viewBox="0 0 24 24">
-                  <path d="M9 5l7 7-7 7"/>
-                </svg>
-              </button>
-
-              {/* Swipe Indicator */}
-              <div className="absolute left-1/2 -translate-x-1/2 bottom-32 flex flex-col items-center gap-1 opacity-50">
-                <svg width="16" height="16" fill="white" viewBox="0 0 24 24" className="animate-bounce">
-                  <path d="M12 4v16m0 0l-6-6m6 6l6-6"/>
-                </svg>
-                <span className="text-white text-[10px]">Swipe</span>
-              </div>
-
-              {/* Bottom Info */}
-              <div className="absolute bottom-4 left-4 right-16 text-white">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-pink-500 to-red-500 flex items-center justify-center font-bold text-sm">
-                    @{allVideos[currentShortIndex]?.author?.[0]?.toUpperCase() || '?'}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-sm">@{allVideos[currentShortIndex]?.author}</div>
-                    <div className="text-xs text-white/70">{allVideos[currentShortIndex]?.publishedAt}</div>
-                  </div>
-                  <button className="ml-2 px-3 py-1 rounded-full border border-white/50 text-xs font-medium hover:bg-white/20 transition-all">
-                    Follow
-                  </button>
-                </div>
-                <p className="text-sm line-clamp-2">{allVideos[currentShortIndex]?.title}</p>
-              </div>
-
-              {/* Right Side Actions */}
-              <div className="absolute right-3 bottom-20 flex flex-col gap-4">
-                <button 
-                  onClick={() => toggleLike(allVideos[currentShortIndex]?.id)}
-                  className="flex flex-col items-center gap-1"
-                >
-                  <div className={`w-12 h-12 rounded-full bg-black/50 flex items-center justify-center transition-all ${
-                    likedVideos.has(allVideos[currentShortIndex]?.id) ? 'text-red-500 scale-110' : 'text-white hover:scale-110'
-                  }`}>
-                    <svg width="26" height="26" fill={likedVideos.has(allVideos[currentShortIndex]?.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-                    </svg>
-                  </div>
-                  <span className="text-white text-xs">{likedVideos.has(allVideos[currentShortIndex]?.id) ? 'Liked' : 'Like'}</span>
-                </button>
-
-                <button 
-                  onClick={playCurrentShort}
-                  className="flex flex-col items-center gap-1"
-                >
-                  <div className="w-12 h-12 rounded-full bg-pink-500 flex items-center justify-center text-white hover:scale-110 transition-all shadow-lg shadow-pink-500/50">
-                    <svg width="26" height="26" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z"/>
-                    </svg>
-                  </div>
-                  <span className="text-white text-xs">Play</span>
-                </button>
-              </div>
-
-              {/* Video Counter */}
-              <div className="absolute top-4 right-4 bg-black/50 px-3 py-1 rounded-full text-xs text-white">
-                {currentShortIndex + 1} / {allVideos.length}
-              </div>
-            </div>
-          </div>
-
-          {/* Console Preview Panel */}
-          <div className="w-[400px] space-y-4">
-            {/* Video Info Console */}
-            <div className="bg-[rgba(20,20,25,0.8)] border border-[rgba(255,255,255,0.08)] rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-[rgba(255,255,255,0.08)] bg-gradient-to-r from-pink-500/10 to-purple-500/10">
-                <div className="flex items-center gap-2 text-pink-400 font-medium text-sm">
-                  <span className="w-2 h-2 bg-pink-400 rounded-full animate-pulse"></span>
-                  VIDEO INFO CONSOLE
-                </div>
-              </div>
-              <div className="p-4 space-y-3 font-mono text-xs">
-                <div className="flex justify-between">
-                  <span className="text-[#94a3b8]">Video ID:</span>
-                  <span className="text-pink-400">{allVideos[currentShortIndex]?.id?.slice(0, 20)}...</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#94a3b8]">Author:</span>
-                  <span className="text-white">@{allVideos[currentShortIndex]?.author}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#94a3b8]">Published:</span>
-                  <span className="text-white">{allVideos[currentShortIndex]?.publishedAt}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#94a3b8]">Status:</span>
-                  <span className="text-emerald-400">● Newest</span>
-                </div>
-                <div className="pt-2 border-t border-[rgba(255,255,255,0.08)]">
-                  <span className="text-[#94a3b8]">Title:</span>
-                  <p className="text-white mt-1 line-clamp-2">{allVideos[currentShortIndex]?.title}</p>
-                </div>
-                <div className="pt-2 border-t border-[rgba(255,255,255,0.08)]">
-                  <span className="text-[#94a3b8]">Description:</span>
-                  <p className="text-white mt-1 line-clamp-3">{allVideos[currentShortIndex]?.description}</p>
-                </div>
-                <div className="pt-2 border-t border-[rgba(255,255,255,0.08)]">
-                  <div className="flex justify-between mb-2">
-                    <span className="text-[#94a3b8]">Watched:</span>
-                    <span className="text-emerald-400">{watchedVideos.size} videos</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[#94a3b8]">Liked:</span>
-                    <span className="text-red-400">{likedVideos.size} videos</span>
-                  </div>
-                </div>
-                <button 
-                  onClick={playCurrentShort}
-                  className="w-full mt-3 py-3 rounded-lg bg-gradient-to-r from-pink-500 to-purple-500 text-white font-medium text-sm hover:opacity-90 transition-all"
-                >
-                  ▶ Play Video
-                </button>
-              </div>
-            </div>
-
-            {/* Activity Log Console */}
-            <div className="bg-[rgba(20,20,25,0.8)] border border-[rgba(255,255,255,0.08)] rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-[rgba(255,255,255,0.08)] bg-black/50">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-indigo-400 font-medium text-sm">
-                    <span className="w-2 h-2 bg-indigo-400 rounded-full"></span>
-                    ACTIVITY LOG
-                  </div>
-                  <button 
-                    onClick={() => setLogs([])}
-                    className="text-[10px] px-2 py-1 rounded bg-[rgba(255,255,255,0.05)] text-[#94a3b8] hover:bg-[rgba(255,255,255,0.1)]"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <div className="p-3 h-[200px] overflow-y-auto font-mono text-xs space-y-1">
-                {logs.length === 0 ? (
-                  <div className="text-[#94a3b8]">No activity yet...</div>
-                ) : (
-                  logs.map((log, i) => (
-                    <div key={i} className={`${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-emerald-400' : 'text-[#94a3b8]'}`}>
-                      <span className="text-white/50">[{log.time}]</span> {log.msg}
-                    </div>
-                  ))
+                {Math.abs(index - currentShortIndex) <= 1 && (
+                  <iframe
+                    src={`${video.embedUrl}?autoplay=1&muted=0`}
+                    className="w-full h-full"
+                    allow="autoplay; fullscreen; encrypted-media"
+                    style={{ border: 'none' }}
+                  />
                 )}
               </div>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="space-y-2">
-              {/* Random Mode Toggle */}
-              <button 
-                onClick={() => {
-                  setIsRandomMode(!isRandomMode)
-                  log(isRandomMode ? 'Sequential mode enabled' : 'Random mode enabled', 'info')
-                }}
-                className={`w-full py-3 rounded-xl font-medium text-sm transition-all ${
-                  isRandomMode 
-                    ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white' 
-                    : 'bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] text-[#94a3b8] hover:bg-[rgba(255,255,255,0.05)]'
-                }`}
-              >
-                {isRandomMode ? '🎲 Random Mode ON' : '🎲 Enable Random Mode'}
-              </button>
-              
-              {/* Navigation */}
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={prevShort}
-                  disabled={currentShortIndex === 0 || isRandomMode}
-                  className="py-3 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] text-[#94a3b8] hover:bg-[rgba(255,255,255,0.05)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  ← Previous
-                </button>
-                <button 
-                  onClick={nextShort}
-                  className="py-3 rounded-xl bg-gradient-to-r from-pink-500 to-red-500 text-white font-medium hover:opacity-90 transition-all"
-                >
-                  {isRandomMode ? '🎲 Random' : 'Next →'}
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
+
+          {/* Transparent overlay to capture swipe */}
+          <div
+            className="absolute inset-0 z-10"
+            style={{ touchAction: 'none' }}
+            onTouchStart={(e) => setSwipeStartY(e.touches[0].clientY)}
+            onTouchEnd={(e) => {
+              const diff = swipeStartY - e.changedTouches[0].clientY
+              if (diff > 50 && currentShortIndex < allVideos.length - 1) {
+                setCurrentShortIndex(currentShortIndex + 1)
+              } else if (diff < -50 && currentShortIndex > 0) {
+                setCurrentShortIndex(currentShortIndex - 1)
+              }
+            }}
+            onWheel={(e) => {
+              if (e.deltaY > 50 && currentShortIndex < allVideos.length - 1) {
+                setCurrentShortIndex(currentShortIndex + 1)
+              } else if (e.deltaY < -50 && currentShortIndex > 0) {
+                setCurrentShortIndex(currentShortIndex - 1)
+              }
+            }}
+          />
         </div>
       )}
 
-      {/* List Mode (Default) */}
+      {/* List Mode */}
       {!shortsMode && searchPerformed && (
-        <div className="bg-[rgba(20,20,25,0.6)] border border-[rgba(255,255,255,0.08)] rounded-3xl p-8 backdrop-blur-sm shadow-[0_20px_40px_rgba(0,0,0,0.2)]">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-medium">
-              Newest Videos {totalResults > 0 && <span className="text-[#94a3b8]">({totalResults} found)</span>}
-            </h3>
-            <div className="flex items-center gap-2 text-sm text-[#94a3b8]">
-              Showing {startPage}-{endPage} of {totalResults}
-            </div>
-          </div>
-
+        <div className="bg-[rgba(20,20,25,0.6)] border border-[rgba(255,255,255,0.08)] rounded-2xl p-4 backdrop-blur-sm shadow-lg">
           {loading ? (
-            <div className="text-center py-12 text-[#94a3b8]">
-              <div className="animate-spin w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-              Searching for newest videos...
+            <div className="text-center py-8 text-white/60">
+              <div className="animate-spin w-6 h-6 border-2 border-pink-500 border-t-transparent rounded-full mx-auto mb-2"></div>
+              Loading...
             </div>
           ) : displayedVideos.length === 0 ? (
-            <div className="text-center py-12 text-[#94a3b8]">
-              No videos found. Try a different search.
+            <div className="text-center py-8 text-white/60">
+              No videos found
             </div>
           ) : (
             <>
-              <div className="grid gap-4">
+              <div className="grid gap-3">
                 {displayedVideos.map((video, index) => (
                   <div
                     key={video.id}
-                    onClick={() => playVideo(video)}
-                    className="flex gap-4 p-4 rounded-xl bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.05)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer transition-all group"
+                    onClick={() => {
+                      setCurrentShortIndex(index)
+                      setShortsMode(true)
+                    }}
+                    className="flex gap-3 p-3 rounded-xl bg-black/30 border border-white/5 hover:border-pink-500/30 cursor-pointer transition-all"
                   >
-                    <div className="relative w-28 h-40 flex-shrink-0 rounded-lg overflow-hidden bg-gradient-to-br from-pink-500 via-red-500 to-yellow-500">
-                      <div className="absolute top-1 left-1 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">
-                        #{startPage + index}
-                      </div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="w-14 h-14 rounded-full bg-pink-500/80 flex items-center justify-center group-hover:scale-110 transition-transform">
-                          <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-                            <path d="M8 5v14l11-7z"/>
-                          </svg>
-                        </div>
-                      </div>
+                    <div className="w-20 h-28 flex-shrink-0 rounded-lg bg-gradient-to-br from-pink-500 to-red-500 flex items-center justify-center">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
+                        <path d="M8 5v14l11-7z"/>
+                      </svg>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-medium text-[#f8fafc] line-clamp-2 mb-2 group-hover:text-pink-400 transition-colors">
+                      <h4 className="font-medium text-white line-clamp-2 text-sm">
                         {video.title}
                       </h4>
-                      <p className="text-xs text-[#94a3b8] mb-2">
-                        @{video.author} • {video.publishedAt}
+                      <p className="text-xs text-white/50 mt-1">
+                        @{video.author}
                       </p>
-                      <p className="text-sm text-[#64748b] line-clamp-3">
-                        {video.description}
-                      </p>
-                      <a 
-                        href={video.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-block mt-2 text-xs text-pink-400 hover:text-pink-300 transition-colors"
-                      >
-                        View on TikTok ↗
-                      </a>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Pagination */}
-              <div className="flex justify-center items-center gap-4 mt-6 pt-6 border-t border-[rgba(255,255,255,0.08)]">
-                <button
-                  onClick={loadPrev5}
-                  disabled={!hasPrev || loading}
-                  className="px-6 py-3 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] text-[#94a3b8] hover:bg-[rgba(255,255,255,0.05)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  ← Previous 5
-                </button>
-                <div className="text-sm text-[#94a3b8]">
-                  Page {currentPage} • Videos {startPage}-{endPage}
-                </div>
+              {hasMore && (
                 <button
                   onClick={loadNext5}
-                  disabled={!hasMore || loading}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-pink-500 to-red-500 text-white font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
+                  className="w-full mt-4 py-3 rounded-xl bg-gradient-to-r from-pink-500 to-red-500 text-white font-medium disabled:opacity-50"
                 >
-                  Next 5 →
+                  Load More
                 </button>
-              </div>
+              )}
             </>
           )}
         </div>

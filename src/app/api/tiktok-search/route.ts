@@ -37,7 +37,7 @@ function extractTikTokId(url: string): { id: string; author: string } | null {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { query, page = 1, offset = 0 } = body;
+    const { query, searchType = 'videos' } = body;
 
     if (!query || typeof query !== 'string') {
       return NextResponse.json(
@@ -46,17 +46,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[TikTok Search] Query:', query, 'Page:', page, 'Offset:', offset);
+    console.log('[TikTok Search] Query:', query, 'Type:', searchType);
 
     const zai = await ZAI.create();
 
-    // Search for newest TikTok videos with recency keywords
+    // Build search query based on type
     const currentYear = new Date().getFullYear();
-    const searchQuery = `${query} newest latest ${currentYear} site:tiktok.com`;
+    let searchQuery = '';
 
+    switch (searchType) {
+      case 'live':
+        searchQuery = `${query} live stream site:tiktok.com`;
+        break;
+      case 'trending':
+        searchQuery = `${query} trending viral popular ${currentYear} site:tiktok.com`;
+        break;
+      case 'hashtag':
+        searchQuery = `#${query} site:tiktok.com`;
+        break;
+      case 'user':
+        searchQuery = `@${query} site:tiktok.com`;
+        break;
+      default:
+        searchQuery = `${query} ${currentYear} site:tiktok.com`;
+    }
+
+    // Get more results for better experience
     const results = await zai.functions.invoke('web_search', {
       query: searchQuery,
-      num: 30, // Get more results for better pagination
+      num: 100,
     });
 
     console.log('[TikTok Search] Found', results.length, 'results');
@@ -76,33 +94,17 @@ export async function POST(request: NextRequest) {
           publishedAt: item.date || 'Recent',
           description: item.snippet || '',
           url: item.url,
-          embedUrl: `https://www.tiktok.com/embed/v2/${extracted.id}`,
+          embedUrl: `https://www.tiktok.com/player/v1/${extracted.id}`,
         });
       }
     }
 
     console.log('[TikTok Search] Parsed', videos.length, 'unique videos');
 
-    // Pagination: 5 results per page
-    const pageSize = 5;
-    const startIndex = offset;
-    const endIndex = startIndex + pageSize;
-    const paginatedVideos = videos.slice(startIndex, endIndex);
-    const hasMore = endIndex < videos.length;
-    const totalPages = Math.ceil(videos.length / pageSize);
-
     return NextResponse.json({
       success: true,
-      videos: paginatedVideos,
-      allVideos: videos, // Send all videos for shorts mode
-      pagination: {
-        currentPage: page,
-        totalPages,
-        totalResults: videos.length,
-        hasMore,
-        pageSize,
-        nextOffset: hasMore ? endIndex : null,
-      },
+      videos: videos,
+      hasMore: videos.length >= 80,
     });
 
   } catch (error: unknown) {
